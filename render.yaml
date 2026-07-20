@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: shuter-market-bot
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --workers 2 --timeout 60 --bind 0.0.0.0:$PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.4
+      - key: APP_ENV
+        value: prod
+      # 以下在 Render 後台的 Environment 填實際值(不要寫進 render.yaml 進版控)
+      - key: LINE_CHANNEL_ACCESS_TOKEN
+        sync: false
+      - key: LINE_CHANNEL_SECRET
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: ANTHROPIC_MODEL
+        value: claude-sonnet-4-6
+      - key: ALLOWED_USER_IDS
+        sync: false
+      - key: ORG_NAME
+        value: 樹德企業
+      - key: BOT_NAME
+        value: 樹德市場觀察室
