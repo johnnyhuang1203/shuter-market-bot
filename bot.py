@@ -101,16 +101,13 @@ def _fmt_research() -> str:
 
 
 def _ai_messages(user_id: str, msg: str) -> list:
-    from ai import ask
-    from flex import card_to_flex, card_to_text
-    card, err = ask(user_id, msg)
+    from ai import ask_and_remember
+    from flex import card_to_flex
+    card, err = ask_and_remember(user_id, msg)
     if err == "AI_DISABLED":
         return [_text("投資助理功能尚未啟用(需設定 ANTHROPIC_API_KEY)。您仍可使用「大盤」「分析 代號」等指令。")]
     if err:
         return [_text("抱歉,剛剛連線市場資料時出了點狀況,請稍後再問一次。")]
-    # 記住這一輪對話,支援後續追問
-    memory.add_user(user_id, msg)
-    memory.add_assistant(user_id, card_to_text(card))
     return [card_to_flex(card)]
 
 

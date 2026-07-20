@@ -184,3 +184,19 @@ def ask(user_id: str, user_msg: str, inject_market: bool = True, max_tokens: int
     except Exception as e:
         print(f"[ai] exception: {e}", flush=True)
         return None, str(e)[:120]
+
+
+def ask_and_remember(user_id: str, user_msg: str):
+    """呼叫 Claude 並把這一輪寫入該使用者記憶(LINE 聊天室與 LIFF 共用)。
+    回傳 (card_dict, None) 或 (None, error_code)。"""
+    card, err = ask(user_id, user_msg)
+    if err:
+        return None, err
+    try:
+        import memory
+        from flex import card_to_text
+        memory.add_user(user_id, user_msg)
+        memory.add_assistant(user_id, card_to_text(card))
+    except Exception as e:
+        print(f"[ai] memory store failed: {e}", flush=True)
+    return card, None

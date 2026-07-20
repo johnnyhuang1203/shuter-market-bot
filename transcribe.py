@@ -28,15 +28,16 @@ def fetch_audio(message_id: str) -> bytes:
     return r.content
 
 
-def transcribe(audio_bytes: bytes):
-    """回傳 (文字, None) 或 (None, error_code)。"""
+def transcribe(audio_bytes: bytes, filename: str = "voice.m4a", content_type: str = "audio/m4a"):
+    """回傳 (文字, None) 或 (None, error_code)。
+    filename/content_type 讓 LINE 語音(m4a)與 LIFF 網頁錄音(webm)都能送。"""
     if not Config.stt_ready():
         return None, "NO_STT"
     try:
         r = requests.post(
             _GROQ_STT,
             headers={"Authorization": f"Bearer {Config.GROQ_API_KEY}"},
-            files={"file": ("voice.m4a", audio_bytes, "audio/m4a")},
+            files={"file": (filename, audio_bytes, content_type)},
             data={
                 "model": Config.GROQ_STT_MODEL,
                 "language": "zh",

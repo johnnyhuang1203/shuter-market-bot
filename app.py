@@ -6,14 +6,17 @@
 import base64
 import hashlib
 import hmac
+import os
 
 import requests
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response
 
 from config import Config
 from bot import handle_text, WELCOME
 
 app = Flask(__name__)
+
+_LIFF_HTML_PATH = os.path.join(os.path.dirname(__file__), "static", "liff.html")
 
 
 def _valid_signature(req) -> bool:
@@ -85,6 +88,73 @@ def _handle_audio(uid: str, message_id: str) -> list:
         return [{"type": "text", "text": "抱歉,這段語音我沒聽清楚,方便再說一次或改用打字嗎?"}]
     heard = {"type": "text", "text": f"🎙️ 我聽到:「{text}」"}
     return [heard] + handle_text(uid, text)
+
+
+# ============ LIFF：「AI 請直說」內嵌聊天畫面 ============
+
+@app.route("/liff")
+def liff_page():
+    """送出聊天網頁(SHUTER AI 投資助理),LIFF_ID 注入給前端 SDK。"""
+    try:
+        with open(_LIFF_HTML_PATH, encoding="utf-8") as f:
+            html = f.read()
+    except Exception as e:
+        print(f"[liff] page read failed: {e}", flush=True)
+        return "LIFF page not available.", 404
+    html = html.replace("__LIFF_ID__", Config.LIFF_ID or "")
+    html = html.replace("__ORG_NAME__", Config.ORG_NAME)
+    html = html.replace("__STT_READY__", "true" if Config.stt_ready() else "false")
+    return Response(html, mimetype="text/html; charset=utf-8")
+
+
+@app.route("/api/ask", methods=["POST"])
+def api_ask():
+    """LIFF 文字問答 → 結構化卡片。與 LINE 聊天室共用同一 userId 記憶。"""
+    data = request.get_json(silent=True) or {}
+    uid = (data.get("userId") or "").strip() or "liff-anon"
+    msg = (data.get("message") or "").strip()
+    if not msg:
+        return jsonify({"ok": False, "error": "empty"}), 400
+    from ai import ask_and_remember
+    from flex import card_to_text
+    card, err = ask_and_remember(uid, msg)
+    if err:
+        return jsonify({"ok": False, "error": err}), 200
+    return jsonify({"ok": True, "card": card, "text": card_to_text(card)})
+
+
+@app.route("/api/ask_audio", methods=["POST"])
+def api_ask_audio():
+    """LIFF 語音錄音 → Groq 聽打 → 問答。回傳逐字稿 + 卡片。"""
+    uid = (request.form.get("userId") or "").strip() or "liff-anon"
+    f = request.files.get("audio")
+    if not f:
+        return jsonify({"ok": False, "error": "no_audio"}), 400
+    fname = f.filename or "voice.webm"
+    ctype = f.mimetype or "audio/webm"
+    from transcribe import transcribe
+    text, terr = transcribe(f.read(), filename=fname, content_type=ctype)
+    if terr == "NO_STT":
+        return jsonify({"ok": False, "error": "NO_STT"}), 200
+    if terr or not text:
+        return jsonify({"ok": False, "error": terr or "empty_transcript"}), 200
+    from ai import ask_and_remember
+    from flex import card_to_text
+    card, err = ask_and_remember(uid, text)
+    if err:
+        return jsonify({"ok": False, "error": err, "transcript": text}), 200
+    return jsonify({"ok": True, "transcript": text, "card": card, "text": card_to_text(card)})
+
+
+@app.route("/api/reset", methods=["POST"])
+def api_reset():
+    """LIFF「新對話」→ 清掉該使用者的對話記憶。"""
+    data = request.get_json(silent=True) or {}
+    uid = (data.get("userId") or "").strip()
+    if uid:
+        import memory
+        memory.clear(uid)
+    return jsonify({"ok": True})
 
 
 @app.route("/webhook", methods=["POST"])
