@@ -15,6 +15,16 @@ class Config:
     # 沿用 wealthbot 的預設模型;可在環境變數覆寫成更新版本
     ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
 
+    # ---- 語音轉文字 (Groq Whisper,可選) ----
+    # 有填才會處理 LINE 語音訊息;留空則語音會請使用者改用打字/手機口述。
+    # 免費申請:https://console.groq.com/keys
+    GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+    GROQ_STT_MODEL = os.environ.get("GROQ_STT_MODEL", "whisper-large-v3")
+
+    # ---- 多輪對話記憶 ----
+    # 每位使用者在記憶體中保留最近 N 輪(一問一答為一輪)。程序重啟即清空。
+    MEMORY_TURNS = int(os.environ.get("MEMORY_TURNS", "8"))
+
     # ---- 使用者白名單 ----
     # 逗號分隔的 LINE userId。留空 = 尚未設定(setup 模式,所有人可用且會在 log 印出 userId,
     # 方便你日後收集主管的 ID 後填回來)。填了之後就只有名單內的人能用。
@@ -31,6 +41,10 @@ class Config:
     @classmethod
     def ai_ready(cls) -> bool:
         return bool(cls.ANTHROPIC_API_KEY)
+
+    @classmethod
+    def stt_ready(cls) -> bool:
+        return bool(cls.GROQ_API_KEY)
 
     @classmethod
     def whitelist_active(cls) -> bool:

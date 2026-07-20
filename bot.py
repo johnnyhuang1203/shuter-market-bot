@@ -1,48 +1,57 @@
-"""訊息路由 —— 樹德市場觀察室。
-自然語言問題 → Claude 市場諮詢;另保留幾個快速指令。
-所有回覆用 reply API(免費,不耗推播額度)。
+"""訊息路由 —— 樹德投資助理。
+
+以「對話」為主:主管用口語(打字或語音)直接問,AI 帶記憶回答並以圖卡呈現。
+另保留幾個快速指令。所有回覆用 reply API(免費,不佔推播額度)。
+
+handle_text() 回傳「LINE 訊息物件的 list」(每則是 text 或 flex),由 app.py 送出。
 """
 import re
 
 from config import Config
+import memory
 
 _SYM_RE = re.compile(r"^[\^A-Za-z0-9=.\-]{1,12}$")
 
 WELCOME = (
-    "您好,歡迎使用「{bot}」。\n"
-    "我是 {org} 為經營層準備的 AI 投資助理,可以隨時為您分析個股與市場、"
-    "討論資產配置與公司資金安排,並給出明確的觀點與方向。\n"
+    "您好,我是 {org} 為經營層準備的 AI 投資助理 🤝\n"
+    "把我當隨身的投資研究顧問 —— 用口語直接問就好,打字或按語音都行,我會記得我們剛聊到哪,答覆用圖卡呈現。\n"
     "───────────\n"
-    "您可以直接用口語問我,例如:\n"
-    "・「台積電現在可以進場嗎?」\n"
+    "可以這樣問我:\n"
+    "・「現在適合布局哪個市場、哪個商品?」\n"
     "・「這筆閒置資金該怎麼配置?」\n"
-    "・「美股這波要不要減碼?」\n"
-    "・「新台幣升值,出口收入怎麼避險?」\n"
+    "・「台積電現在可以進場嗎?」\n"
+    "・(接著追問)「那風險呢?」\n"
     "───────────\n"
-    "也可以用快速指令(輸入「幫助」看全部)。\n"
+    "輸入「幫助」看更多用法;想重新開始一個話題輸入「重新開始」。\n"
     "※內部決策參考;實際交易與大額配置請併專業意見。"
 )
 
 HELP = (
-    "📌 {bot} 使用說明\n"
+    "📌 {org} · AI 投資助理 使用說明\n"
     "───────────\n"
-    "【直接問我(建議)】\n"
-    "用口語問個股、資產配置、總經、公司資金安排,例如:\n"
-    "「台積電現在可以進場嗎?」「這筆閒置資金怎麼配置?」\n"
+    "【直接問我(主要用法)】\n"
+    "打字或按語音,用口語問市場、個股、資產配置、公司資金安排。\n"
+    "我會記得前後文,可以直接追問「那這個呢?」「風險?」\n"
+    "「現在該做什麼市場/商品」這類問題,我會給你一張建議圖卡。\n"
     "\n【快速指令】\n"
-    "大盤 → 六大指數即時行情\n"
+    "大盤 → 六大指數即時行情(圖卡)\n"
     "分析 2330 → 個股七指標多空判讀\n"
     "2330 → 查個股即時報價(台股直接輸代號)\n"
     "報告 → 最新財經研報/晨訊\n"
+    "重新開始 → 清掉目前對話記憶,換新話題\n"
     "我的ID → 顯示您的 LINE ID\n"
     "───────────\n"
     "※內部決策參考;實際交易與大額配置請併專業意見。"
 )
 
 DENY = (
-    "您好,「{bot}」目前為 {org} 指定主管專用。\n"
+    "您好,「{org} AI 投資助理」目前為指定主管專用。\n"
     "如需開通,請將以下您的 ID 提供給管理者:\n{uid}"
 )
+
+
+def _text(s: str) -> dict:
+    return {"type": "text", "text": (s or "")[:4900]}
 
 
 def _fmt_quote(sym: str) -> str:
@@ -71,17 +80,13 @@ def _fmt_analysis(sym: str) -> str:
     return "\n".join(lines)
 
 
-def _fmt_indices() -> str:
+def _indices_message():
     from market import data as mkt
     rows = mkt.indices()
     if not rows:
-        return "指數資料暫時取不到,請稍後再試。"
-    out = ["🌏 今日大盤"]
-    for r in rows:
-        arrow = "▲" if r["change_pct"] > 0 else ("▼" if r["change_pct"] < 0 else "–")
-        out.append(f"{r['name']} {r['price']:,} {arrow}{r['change_pct']:+.2f}%")
-    out.append("\n想聽方向解讀,直接問我即可。")
-    return "\n".join(out)
+        return _text("指數資料暫時取不到,請稍後再試。")
+    from flex import indices_message
+    return indices_message(rows)
 
 
 def _fmt_research() -> str:
@@ -95,44 +100,54 @@ def _fmt_research() -> str:
     return "\n".join(out)
 
 
-def _ai_answer(msg: str) -> str:
+def _ai_messages(user_id: str, msg: str) -> list:
     from ai import ask
-    ans, err = ask(msg)
+    from flex import card_to_flex, card_to_text
+    card, err = ask(user_id, msg)
     if err == "AI_DISABLED":
-        return "市場諮詢功能尚未啟用(需設定 ANTHROPIC_API_KEY)。您仍可使用「大盤」「分析 代號」等指令。"
+        return [_text("投資助理功能尚未啟用(需設定 ANTHROPIC_API_KEY)。您仍可使用「大盤」「分析 代號」等指令。")]
     if err:
-        return "抱歉,剛剛連線市場資料時出了點狀況,請稍後再問一次。"
-    return ans
+        return [_text("抱歉,剛剛連線市場資料時出了點狀況,請稍後再問一次。")]
+    # 記住這一輪對話,支援後續追問
+    memory.add_user(user_id, msg)
+    memory.add_assistant(user_id, card_to_text(card))
+    return [card_to_flex(card)]
 
 
-def handle_text(user_id: str, text: str) -> str:
-    """回傳要回覆的文字。白名單、指令、AI 都在這裡分流。"""
+def handle_text(user_id: str, text: str) -> list:
+    """回傳要送出的 LINE 訊息物件 list。白名單、指令、AI 都在這裡分流。"""
     text = (text or "").strip()
 
     # 取自己的 ID(任何人都能用,方便收集白名單)
     if text.lower() in ("我的id", "myid", "id", "我的 id"):
-        return f"您的 LINE ID:\n{user_id}"
+        return [_text(f"您的 LINE ID:\n{user_id}")]
 
     # 白名單(未設定時放行;設定後只放行名單內)
     if not Config.is_allowed(user_id):
-        return DENY.format(bot=Config.BOT_NAME, org=Config.ORG_NAME, uid=user_id)
+        return [_text(DENY.format(org=Config.ORG_NAME, uid=user_id))]
+
+    if not text:
+        return [_text("請直接用口語問我,或輸入「幫助」看用法。")]
 
     up = text.upper()
 
     if text in ("幫助", "說明", "help", "?", "指令") or up == "HELP":
-        return HELP.format(bot=Config.BOT_NAME)
+        return [_text(HELP.format(org=Config.ORG_NAME))]
+    if text in ("重新開始", "清除記憶", "清除", "忘記", "重來", "reset", "RESET"):
+        memory.clear(user_id)
+        return [_text("好的,已清掉目前的對話記憶,我們重新開始。要聊哪個市場或標的?")]
     if text in ("報告", "晨訊", "研報"):
-        return _fmt_research()
+        return [_text(_fmt_research())]
     if text in ("大盤", "指數", "行情"):
-        return _fmt_indices()
+        return [_indices_message()]
     if up.startswith("分析"):
         sym = up.replace("分析", "", 1).strip()
         if sym and _SYM_RE.match(sym):
-            return _fmt_analysis(sym)
-        return "用法:分析 2330(台股代號直接輸入)"
-    # 純代號(數字或英文代號)→ 報價;但太短的中文不會落這裡
+            return [_text(_fmt_analysis(sym))]
+        return [_text("用法:分析 2330(台股代號直接輸入)")]
+    # 純代號(數字或英文代號)→ 報價
     if _SYM_RE.match(up) and (up.isdigit() or up.isascii()):
-        return _fmt_quote(up)
+        return [_text(_fmt_quote(up))]
 
-    # 其餘一律交給 AI 做市場方向諮詢
-    return _ai_answer(text)
+    # 其餘一律交給 AI 做對話式諮詢(帶記憶,回圖卡)
+    return _ai_messages(user_id, text)
